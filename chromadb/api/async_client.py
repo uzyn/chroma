@@ -408,7 +408,6 @@ class AsyncClient(SharedSystemClient, AsyncClientAPI):
         await self._server.close()
         await self._admin_client.close()
 
-
     # endregion
 
 
