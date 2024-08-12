@@ -1,5 +1,3 @@
-use crate::errors::{ChromaError, ErrorCodes};
-use crate::execution::data::data_chunk::Chunk;
 use crate::execution::dispatcher::Dispatcher;
 use crate::execution::operator::{wrap, TaskResult};
 use crate::execution::operators::count_records::{
@@ -18,13 +16,13 @@ use crate::execution::orchestration::common::terminate_with_error;
 use crate::log::log::PullLogsError;
 use crate::sysdb::sysdb::{GetCollectionsError, GetSegmentsError};
 use crate::system::{Component, ComponentContext, ComponentHandle, Handler};
-use crate::types::{Collection, LogRecord, Metadata, SegmentType};
-use crate::types::{Where, WhereDocument};
-use crate::{
-    blockstore::provider::BlockfileProvider, log::log::Log, sysdb::sysdb::SysDb, system::System,
-    types::Segment,
-};
+use crate::{log::log::Log, sysdb::sysdb::SysDb, system::System};
 use async_trait::async_trait;
+use chroma_blockstore::provider::BlockfileProvider;
+use chroma_error::{ChromaError, ErrorCodes};
+use chroma_types::{Chunk, Segment};
+use chroma_types::{Collection, LogRecord, Metadata, SegmentType};
+use chroma_types::{Where, WhereDocument};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing::Span;
@@ -49,6 +47,7 @@ pub(crate) struct MetadataQueryOrchestrator {
     system: System,
     // Query state
     metadata_segment_id: Uuid,
+    collection_id: Uuid,
     query_ids: Option<Vec<String>>,
     // State fetched or created for query execution
     record_segment: Option<Segment>,
@@ -74,6 +73,7 @@ pub(crate) struct CountQueryOrchestrator {
     system: System,
     // Query state
     metadata_segment_id: Uuid,
+    collection_id: Uuid,
     // State fetched or created for query execution
     record_segment: Option<Segment>,
     collection: Option<Collection>,
@@ -90,7 +90,7 @@ pub(crate) struct CountQueryOrchestrator {
 enum MetadataSegmentQueryError {
     #[error("Blockfile metadata segment with id: {0} not found")]
     BlockfileMetadataSegmentNotFound(Uuid),
-    #[error("Get segments error")]
+    #[error("Get segments error: {0}")]
     GetSegmentsError(#[from] GetSegmentsError),
     #[error("Record segment not found for collection: {0}")]
     RecordSegmentNotFound(Uuid),
@@ -100,7 +100,7 @@ enum MetadataSegmentQueryError {
     SystemTimeError(#[from] std::time::SystemTimeError),
     #[error("Collection not found for id: {0}")]
     CollectionNotFound(Uuid),
-    #[error("Get collection error")]
+    #[error("Get collection error: {0}")]
     GetCollectionError(#[from] GetCollectionsError),
 }
 
@@ -124,6 +124,7 @@ impl CountQueryOrchestrator {
     pub(crate) fn new(
         system: System,
         metadata_segment_id: &Uuid,
+        collection_id: &Uuid,
         log: Box<Log>,
         sysdb: Box<SysDb>,
         dispatcher: ComponentHandle<Dispatcher>,
@@ -132,6 +133,7 @@ impl CountQueryOrchestrator {
         Self {
             system,
             metadata_segment_id: *metadata_segment_id,
+            collection_id: *collection_id,
             record_segment: None,
             collection: None,
             log,
@@ -146,7 +148,11 @@ impl CountQueryOrchestrator {
         println!("Starting Count Query Orchestrator");
         // Populate the orchestrator with the initial state - The Record Segment and the Collection
         let metdata_segment = self
-            .get_metadata_segment_from_id(self.sysdb.clone(), &self.metadata_segment_id)
+            .get_metadata_segment_from_id(
+                self.sysdb.clone(),
+                &self.metadata_segment_id,
+                &self.collection_id,
+            )
             .await;
 
         let metadata_segment = match metdata_segment {
@@ -158,18 +164,7 @@ impl CountQueryOrchestrator {
             }
         };
 
-        let collection_id = match metadata_segment.collection {
-            Some(collection_id) => collection_id,
-            None => {
-                tracing::error!("Metadata segment has no collection");
-                terminate_with_error(
-                    self.result_channel.take(),
-                    Box::new(MetadataSegmentQueryError::MetadataSegmentHasNoCollection),
-                    ctx,
-                );
-                return;
-            }
-        };
+        let collection_id = metadata_segment.collection;
 
         let record_segment = self
             .get_record_segment_from_collection_id(self.sysdb.clone(), &collection_id)
@@ -246,9 +241,10 @@ impl CountQueryOrchestrator {
         &self,
         mut sysdb: Box<SysDb>,
         metadata_segment_id: &Uuid,
+        collection_id: &Uuid,
     ) -> Result<Segment, Box<dyn ChromaError>> {
         let segments = sysdb
-            .get_segments(Some(*metadata_segment_id), None, None, None)
+            .get_segments(Some(*metadata_segment_id), None, None, *collection_id)
             .await;
         let segment = match segments {
             Ok(segments) => {
@@ -284,7 +280,7 @@ impl CountQueryOrchestrator {
                 None,
                 Some(SegmentType::BlockfileRecord.into()),
                 None,
-                Some(*collection_id),
+                *collection_id,
             )
             .await;
 
@@ -434,6 +430,7 @@ impl MetadataQueryOrchestrator {
     pub(crate) fn new(
         system: System,
         metadata_segment_id: &Uuid,
+        collection_id: &Uuid,
         query_ids: Option<Vec<String>>,
         log: Box<Log>,
         sysdb: Box<SysDb>,
@@ -446,6 +443,7 @@ impl MetadataQueryOrchestrator {
             state: ExecutionState::Pending,
             system,
             metadata_segment_id: *metadata_segment_id,
+            collection_id: *collection_id,
             query_ids,
             record_segment: None,
             metadata_segment: None,
@@ -465,7 +463,11 @@ impl MetadataQueryOrchestrator {
         tracing::info!("Starting Metadata Query Orchestrator");
         // Populate the orchestrator with the initial state - The Metadata Segment, The Record Segment and the Collection
         let metdata_segment = self
-            .get_metadata_segment_from_id(self.sysdb.clone(), &self.metadata_segment_id)
+            .get_metadata_segment_from_id(
+                self.sysdb.clone(),
+                &self.metadata_segment_id,
+                &self.collection_id,
+            )
             .await;
 
         let metadata_segment = match metdata_segment {
@@ -476,17 +478,7 @@ impl MetadataQueryOrchestrator {
             }
         };
 
-        let collection_id = match metadata_segment.collection {
-            Some(collection_id) => collection_id,
-            None => {
-                terminate_with_error(
-                    self.result_channel.take(),
-                    Box::new(MetadataSegmentQueryError::MetadataSegmentHasNoCollection),
-                    ctx,
-                );
-                return;
-            }
-        };
+        let collection_id = metadata_segment.collection;
         self.metadata_segment = Some(metadata_segment);
 
         let record_segment = self
@@ -594,9 +586,10 @@ impl MetadataQueryOrchestrator {
         &self,
         mut sysdb: Box<SysDb>,
         metadata_segment_id: &Uuid,
+        collection_id: &Uuid,
     ) -> Result<Segment, Box<dyn ChromaError>> {
         let segments = sysdb
-            .get_segments(Some(*metadata_segment_id), None, None, None)
+            .get_segments(Some(*metadata_segment_id), None, None, *collection_id)
             .await;
         let segment = match segments {
             Ok(segments) => {
@@ -632,7 +625,7 @@ impl MetadataQueryOrchestrator {
                 None,
                 Some(SegmentType::BlockfileRecord.into()),
                 None,
-                Some(*collection_id),
+                *collection_id,
             )
             .await;
 

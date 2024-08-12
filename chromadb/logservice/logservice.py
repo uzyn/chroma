@@ -20,6 +20,7 @@ from chromadb.config import System
 from chromadb.telemetry.opentelemetry import (
     OpenTelemetryClient,
     OpenTelemetryGranularity,
+    add_attributes_to_current_span,
     trace_method,
 )
 from overrides import override
@@ -76,7 +77,7 @@ class LogService(Producer, Consumer):
 
     @trace_method("LogService.purge_log", OpenTelemetryGranularity.ALL)
     @override
-    def purge_log(self) -> None:
+    def purge_log(self, collection_id: UUID) -> None:
         raise NotImplementedError("Not implemented")
 
     @trace_method("LogService.submit_embedding", OpenTelemetryGranularity.ALL)
@@ -96,6 +97,12 @@ class LogService(Producer, Consumer):
     ) -> Sequence[SeqId]:
         logger.info(
             f"Submitting {len(embeddings)} embeddings to log for collection {collection_id}"
+        )
+
+        add_attributes_to_current_span(
+            {
+                "records_count": len(embeddings),
+            }
         )
 
         if not self._running:

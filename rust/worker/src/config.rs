@@ -1,8 +1,5 @@
-use async_trait::async_trait;
-use figment::providers::{Env, Format, Serialized, Yaml};
+use figment::providers::{Env, Format, Yaml};
 use serde::Deserialize;
-
-use crate::errors::ChromaError;
 
 const DEFAULT_CONFIG_PATH: &str = "./chroma_config.yaml";
 const ENV_PREFIX: &str = "CHROMA_";
@@ -100,11 +97,11 @@ pub(crate) struct QueryServiceConfig {
     pub(crate) assignment_policy: crate::assignment::config::AssignmentPolicyConfig,
     pub(crate) memberlist_provider: crate::memberlist::config::MemberlistProviderConfig,
     pub(crate) sysdb: crate::sysdb::config::SysDbConfig,
-    pub(crate) storage: crate::storage::config::StorageConfig,
+    pub(crate) storage: chroma_storage::config::StorageConfig,
     pub(crate) log: crate::log::config::LogConfig,
     pub(crate) dispatcher: crate::execution::config::DispatcherConfig,
-    pub(crate) blockfile_provider: crate::blockstore::config::BlockfileProviderConfig,
-    pub(crate) hnsw_provider: crate::index::config::HnswProviderConfig,
+    pub(crate) blockfile_provider: chroma_blockstore::config::BlockfileProviderConfig,
+    pub(crate) hnsw_provider: chroma_index::config::HnswProviderConfig,
 }
 
 #[derive(Deserialize)]
@@ -126,24 +123,12 @@ pub(crate) struct CompactionServiceConfig {
     pub(crate) assignment_policy: crate::assignment::config::AssignmentPolicyConfig,
     pub(crate) memberlist_provider: crate::memberlist::config::MemberlistProviderConfig,
     pub(crate) sysdb: crate::sysdb::config::SysDbConfig,
-    pub(crate) storage: crate::storage::config::StorageConfig,
+    pub(crate) storage: chroma_storage::config::StorageConfig,
     pub(crate) log: crate::log::config::LogConfig,
     pub(crate) dispatcher: crate::execution::config::DispatcherConfig,
     pub(crate) compactor: crate::compactor::config::CompactorConfig,
-    pub(crate) blockfile_provider: crate::blockstore::config::BlockfileProviderConfig,
-    pub(crate) hnsw_provider: crate::index::config::HnswProviderConfig,
-}
-
-/// # Description
-/// A trait for configuring a struct from a config object.
-/// # Notes
-/// This trait is used to configure structs from the config object.
-/// Components that need to be configured from the config object should implement this trait.
-#[async_trait]
-pub(crate) trait Configurable<T> {
-    async fn try_from_config(worker_config: &T) -> Result<Self, Box<dyn ChromaError>>
-    where
-        Self: Sized;
+    pub(crate) blockfile_provider: chroma_blockstore::config::BlockfileProviderConfig,
+    pub(crate) hnsw_provider: chroma_index::config::HnswProviderConfig,
 }
 
 #[cfg(test)]
@@ -184,6 +169,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -236,6 +222,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -314,6 +301,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -366,6 +354,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -462,6 +451,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -514,6 +504,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -571,6 +562,10 @@ mod tests {
             let _ = jail.set_env("CHROMA_COMPACTION_SERVICE__STORAGE__S3__BUCKET", "buckets!");
             let _ = jail.set_env("CHROMA_COMPACTION_SERVICE__STORAGE__S3__CREDENTIALS", "AWS");
             let _ = jail.set_env(
+                "CHROMA_COMPACTION_SERVICE__STORAGE__S3__upload_part_size_bytes",
+                format!("{}", 1024 * 1024 * 8),
+            );
+            let _ = jail.set_env(
                 "CHROMA_COMPACTION_SERVICE__STORAGE__S3__CONNECT_TIMEOUT_MS",
                 5000,
             );
@@ -604,6 +599,7 @@ mod tests {
                             credentials: Minio
                             connect_timeout_ms: 5000
                             request_timeout_ms: 1000
+                            upload_part_size_bytes: 8388608
                     log:
                         Grpc:
                             host: "localhost"
@@ -690,14 +686,15 @@ mod tests {
             );
             assert_eq!(config.compaction_service.my_port, 50051);
             match &config.compaction_service.storage {
-                crate::storage::config::StorageConfig::S3(s) => {
+                chroma_storage::config::StorageConfig::S3(s) => {
                     assert_eq!(s.bucket, "buckets!");
                     assert_eq!(
                         s.credentials,
-                        crate::storage::config::S3CredentialsConfig::AWS
+                        chroma_storage::config::S3CredentialsConfig::AWS
                     );
                     assert_eq!(s.connect_timeout_ms, 5000);
                     assert_eq!(s.request_timeout_ms, 1000);
+                    assert_eq!(s.upload_part_size_bytes, 1024 * 1024 * 8);
                 }
                 _ => panic!("Invalid storage config"),
             }

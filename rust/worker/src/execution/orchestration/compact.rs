@@ -1,8 +1,5 @@
-use super::super::operator::{wrap, TaskMessage};
-use crate::blockstore::provider::BlockfileProvider;
+use super::super::operator::wrap;
 use crate::compactor::CompactionJob;
-use crate::errors::ChromaError;
-use crate::execution::data::data_chunk::Chunk;
 use crate::execution::dispatcher::Dispatcher;
 use crate::execution::operator::TaskResult;
 use crate::execution::operators::flush_s3::FlushS3Input;
@@ -24,7 +21,6 @@ use crate::execution::operators::write_segments::WriteSegmentsOperator;
 use crate::execution::operators::write_segments::WriteSegmentsOperatorError;
 use crate::execution::operators::write_segments::WriteSegmentsOutput;
 use crate::execution::orchestration::common::terminate_with_error;
-use crate::index::hnsw_provider::HnswIndexProvider;
 use crate::log::log::Log;
 use crate::log::log::PullLogsError;
 use crate::segment::distributed_hnsw_segment::DistributedHNSWSegmentWriter;
@@ -39,11 +35,13 @@ use crate::system::ComponentHandle;
 use crate::system::Handler;
 use crate::system::ReceiverForMessage;
 use crate::system::System;
-use crate::types::LogRecord;
-use crate::types::Segment;
-use crate::types::SegmentFlushInfo;
-use crate::types::SegmentType;
 use async_trait::async_trait;
+use chroma_blockstore::provider::BlockfileProvider;
+use chroma_error::ChromaError;
+use chroma_error::ErrorCodes;
+use chroma_index::hnsw_provider::HnswIndexProvider;
+use chroma_types::Chunk;
+use chroma_types::{LogRecord, Segment, SegmentFlushInfo, SegmentType};
 use core::panic;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
@@ -131,8 +129,8 @@ enum GetSegmentWritersError {
 }
 
 impl ChromaError for GetSegmentWritersError {
-    fn code(&self) -> crate::errors::ErrorCodes {
-        crate::errors::ErrorCodes::Internal
+    fn code(&self) -> ErrorCodes {
+        ErrorCodes::Internal
     }
 }
 
@@ -143,8 +141,8 @@ enum CompactionError {
 }
 
 impl ChromaError for CompactionError {
-    fn code(&self) -> crate::errors::ErrorCodes {
-        crate::errors::ErrorCodes::Internal
+    fn code(&self) -> ErrorCodes {
+        ErrorCodes::Internal
     }
 }
 
@@ -225,7 +223,7 @@ impl CompactOrchestrator {
             Some(end_timestamp),
         );
         let task = wrap(operator, input, self_address);
-        match self.dispatcher.send(task, None).await {
+        match self.dispatcher.send(task, Some(Span::current())).await {
             Ok(_) => (),
             Err(e) => {
                 tracing::error!("Error dispatching pull logs for compaction {:?}", e);
@@ -244,12 +242,12 @@ impl CompactOrchestrator {
     ) {
         self.state = ExecutionState::Partition;
         // TODO: make this configurable
-        let max_partition_size = 100;
+        let max_partition_size = 10_000;
         let operator = PartitionOperator::new();
         println!("Sending N Records: {:?}", records.len());
         let input = PartitionInput::new(records, max_partition_size);
         let task = wrap(operator, input, self_address);
-        match self.dispatcher.send(task, None).await {
+        match self.dispatcher.send(task, Some(Span::current())).await {
             Ok(_) => (),
             Err(e) => {
                 tracing::error!("Error dispatching partition for compaction {:?}", e);
@@ -358,7 +356,7 @@ impl CompactOrchestrator {
         );
 
         let task = wrap(operator, input, self_address);
-        match self.dispatcher.send(task, None).await {
+        match self.dispatcher.send(task, Some(Span::current())).await {
             Ok(_) => (),
             Err(e) => {
                 tracing::error!("Error dispatching register for compaction {:?}", e);
@@ -388,7 +386,7 @@ impl CompactOrchestrator {
 
         let segments = self
             .sysdb
-            .get_segments(None, None, None, Some(self.collection_id))
+            .get_segments(None, None, None, self.collection_id)
             .await;
 
         tracing::info!("Retrived segments: {:?}", segments);
